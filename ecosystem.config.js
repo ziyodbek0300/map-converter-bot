@@ -1,12 +1,31 @@
 // PM2 process configuration.
 // Start with:  pm2 start ecosystem.config.js
+//
+// Reads .env itself (works on any Node version) and passes the vars to the
+// app, so we don't depend on Node's --env-file flag.
+const fs = require('fs');
+const path = require('path');
+
+function loadEnv() {
+  const file = path.join(__dirname, '.env');
+  const env = {};
+  if (fs.existsSync(file)) {
+    for (const line of fs.readFileSync(file, 'utf8').split('\n')) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('#')) continue;
+      const eq = trimmed.indexOf('=');
+      if (eq === -1) continue;
+      env[trimmed.slice(0, eq).trim()] = trimmed.slice(eq + 1).trim();
+    }
+  }
+  return env;
+}
+
 module.exports = {
   apps: [
     {
       name: 'map-converter',
       script: 'dist/index.js',
-      // Load BOT_TOKEN (and any other vars) from .env, like the npm scripts do.
-      node_args: '--env-file-if-exists=.env',
       instances: 1, // a Telegram long-polling bot must be a single instance
       autorestart: true,
       max_restarts: 10,
@@ -14,6 +33,7 @@ module.exports = {
       max_memory_restart: '200M',
       env: {
         NODE_ENV: 'production',
+        ...loadEnv(),
       },
     },
   ],
