@@ -8,13 +8,14 @@
     "start": "node --env-file-if-exists=.env dist/index.js",
     "dev": "tsc && node --env-file-if-exists=.env dist/index.js",
     "typecheck": "tsc --noEmit",
-    "test": "node --import tsx --test \"src/**/*.test.ts\""
+    "test": "glob -c \"node --import tsx --test\" \"src/**/*.test.ts\""
   },
   "dependencies": {
     "telegraf": "^4.16.3"
   },
   "devDependencies": {
     "@types/node": "^25.9.1",
+    "glob": "^11.0.0",
     "tsx": "^4.19.2",
     "typescript": "^5.5.3"
   },
