@@ -3,8 +3,8 @@
 import { loadConfig } from './config';
 import { createBot } from './bot/bot';
 
-const { botToken } = loadConfig();
-const bot = createBot(botToken);
+const { botToken, adminIds } = loadConfig();
+const bot = createBot(botToken, { adminIds });
 
 void bot.launch(() => console.log('Bot started ✨'));
 

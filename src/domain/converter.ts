@@ -3,6 +3,9 @@
 
 import { PROVIDERS } from './providers';
 import type { Conversion, Place, Provider } from './types';
+import { TtlCache } from './cache';
+import { log } from '../log';
+import { metrics } from '../metrics';
 
 // --- Provider metadata accessors -------------------------------------------
 
@@ -63,8 +66,26 @@ const BROWSER_UA =
 // bot-challenge page instead of the 301 — a transient, IP/rate-based block that
 // usually clears on a retry (which is why re-sending the same link works). Retry
 // a few times before giving up rather than surfacing a spurious "no link found".
-const EXPAND_MAX_ATTEMPTS = 3;
-const EXPAND_RETRY_DELAY_MS = 400;
+// Defaults preserve the original behavior; env vars allow tuning per deployment.
+const EXPAND_MAX_ATTEMPTS = intEnv('EXPAND_MAX_ATTEMPTS', 3);
+const EXPAND_RETRY_DELAY_MS = intEnv('EXPAND_RETRY_DELAY_MS', 400);
+
+// Successful expansions are stable (a short code maps to one long URL), so a
+// generous TTL is safe and saves repeated network round-trips for forwarded links.
+const CACHE_TTL_MS = intEnv('EXPAND_CACHE_TTL_MS', 24 * 60 * 60 * 1000); // 24h
+const CACHE_MAX_SIZE = intEnv('EXPAND_CACHE_MAX_SIZE', 1000);
+
+const expandCache = new TtlCache<string>({
+  ttlMs: CACHE_TTL_MS,
+  maxSize: CACHE_MAX_SIZE,
+  onHit: () => metrics.inc('cacheHit'),
+  onMiss: () => metrics.inc('cacheMiss'),
+});
+
+function intEnv(name: string, fallback: number): number {
+  const n = Number(process.env[name]);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+}
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -88,23 +109,38 @@ async function fetchExpanded(input: string): Promise<string> {
  * string, or the original on failure.
  */
 export async function expandShortLink(input: string): Promise<string> {
+  const cached = expandCache.get(input);
+  if (cached !== undefined) {
+    log.debug('expand.hit', { input });
+    return cached;
+  }
+  log.debug('expand.miss', { input });
+
   for (let attempt = 1; attempt <= EXPAND_MAX_ATTEMPTS; attempt++) {
     try {
       const final = await fetchExpanded(input);
-      if (final !== input) return final;
-      console.warn(
-        `short-link expansion did not redirect (attempt ${attempt}/${EXPAND_MAX_ATTEMPTS}):`,
-        input
-      );
-    } catch (err) {
-      console.warn(
-        `short-link expansion failed (attempt ${attempt}/${EXPAND_MAX_ATTEMPTS}):`,
+      if (final !== input) {
+        expandCache.set(input, final); // only cache successful expansions
+        return final;
+      }
+      log.warn('expand.retry', {
+        reason: 'no-redirect',
+        attempt,
+        max: EXPAND_MAX_ATTEMPTS,
         input,
-        err
-      );
+      });
+    } catch (err) {
+      log.warn('expand.retry', {
+        reason: 'fetch-error',
+        attempt,
+        max: EXPAND_MAX_ATTEMPTS,
+        input,
+        error: String(err),
+      });
     }
     if (attempt < EXPAND_MAX_ATTEMPTS) await delay(EXPAND_RETRY_DELAY_MS);
   }
+  log.warn('expand.failed', { input, attempts: EXPAND_MAX_ATTEMPTS });
   return input;
 }
 
