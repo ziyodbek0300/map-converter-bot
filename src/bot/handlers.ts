@@ -17,6 +17,31 @@ export interface HandlerOptions {
   adminIds: number[];
 }
 
+/** Pulls non-sensitive identifying context off an update for log correlation. */
+function logContext(ctx: Context): Record<string, unknown> {
+  return {
+    userId: ctx.from?.id,
+    username: ctx.from?.username,
+    chatType: ctx.chat?.type,
+  };
+}
+
+/** Truncates user input so log lines stay bounded but still show what was sent. */
+function snippet(text: string, max = 120): string {
+  const clean = text.replace(/\s+/g, ' ').trim();
+  return clean.length > max ? `${clean.slice(0, max)}…` : clean;
+}
+
+/** Compact, log-friendly summary of where a conversion landed. */
+function placeFields({ source, place }: Conversion): Record<string, unknown> {
+  return {
+    source: source ?? 'location',
+    lat: place.lat,
+    lon: place.lon,
+    label: place.label,
+  };
+}
+
 export function registerHandlers(bot: Telegraf, opts: HandlerOptions = { adminIds: [] }): void {
   const adminIds = new Set(opts.adminIds);
 
@@ -38,6 +63,7 @@ export function registerHandlers(bot: Telegraf, opts: HandlerOptions = { adminId
     const { location, title } = ctx.message.venue;
     const result = convertCoords(location.latitude, location.longitude, title);
     metrics.recordConversion(result.source);
+    log.info('convert.ok', { ...logContext(ctx), input: 'venue', ...placeFields(result) });
     await replyConversion(ctx, result);
   });
 
@@ -48,29 +74,38 @@ export function registerHandlers(bot: Telegraf, opts: HandlerOptions = { adminId
     const { latitude, longitude } = ctx.message.location;
     const result = convertCoords(latitude, longitude);
     metrics.recordConversion(result.source);
+    log.info('convert.ok', { ...logContext(ctx), input: 'location', ...placeFields(result) });
     await replyConversion(ctx, result);
   });
 
   // Direct message: convert and reply with caption + buttons (incl. share).
   bot.on(message('text'), async (ctx) => {
     metrics.inc('updates');
+    const text = ctx.message.text;
+    const input = snippet(text);
+    const start = Date.now();
     let result: Conversion | null;
     try {
-      result = await convert(ctx.message.text);
+      result = await convert(text);
     } catch (err) {
       metrics.inc('errors');
-      log.error('convert.fail', { error: String(err) });
+      log.error('convert.fail', { ...logContext(ctx), input, error: String(err) });
       return ctx.reply(MESSAGES.error);
     }
 
+    const ms = Date.now() - start;
+
     if (!result) {
       metrics.inc('notFound');
-      log.info('convert.notfound', {});
+      // Distinguish "they didn't send a link at all" from "link found but
+      // unparseable" — the two need different product responses.
+      const reason = /https?:\/\//i.test(text) ? 'unsupported-or-no-coords' : 'no-url';
+      log.info('convert.notfound', { ...logContext(ctx), input, reason, ms });
       return ctx.reply(MESSAGES.notFound);
     }
 
     metrics.recordConversion(result.source);
-    log.info('convert.ok', { source: result.source ?? 'location' });
+    log.info('convert.ok', { ...logContext(ctx), input, ...placeFields(result), ms });
     await replyConversion(ctx, result);
   });
 
@@ -79,20 +114,24 @@ export function registerHandlers(bot: Telegraf, opts: HandlerOptions = { adminId
   // tapped in the chosen chat, posts the same caption + app buttons.
   bot.on('inline_query', async (ctx) => {
     metrics.inc('inlineQueries');
+    const input = snippet(ctx.inlineQuery.query);
     let result: Conversion | null = null;
     try {
       result = await convert(ctx.inlineQuery.query);
     } catch (err) {
       metrics.inc('errors');
-      log.error('convert.fail', { mode: 'inline', error: String(err) });
+      log.error('convert.fail', { ...logContext(ctx), mode: 'inline', input, error: String(err) });
     }
 
     if (!result) {
+      log.info('convert.notfound', { ...logContext(ctx), mode: 'inline', input });
       return ctx.answerInlineQuery([], {
         cache_time: 0,
         button: { text: MESSAGES.inlineNoResult, start_parameter: 'start' },
       });
     }
+
+    log.info('convert.ok', { ...logContext(ctx), mode: 'inline', input, ...placeFields(result) });
 
     const { place } = result;
     await ctx.answerInlineQuery(
