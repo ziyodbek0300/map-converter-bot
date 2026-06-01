@@ -15,8 +15,12 @@ const BUTTONS_PER_ROW = 2;
 
 /** Builds the MarkdownV2 caption shown above the conversion buttons. */
 export function renderCaption({ source, place }: Conversion): string {
+  // No source app → the coords came from a shared Telegram location/venue.
+  const header = source
+    ? `${providerIcon(source)} *${escapeMarkdownV2(providerName(source))}*`
+    : '📍 *Location \\/ Joylashuv*';
   return [
-    `${providerIcon(source)} *${escapeMarkdownV2(providerName(source))}*`,
+    header,
     place.label ? `📌 ${escapeMarkdownV2(place.label)}` : null,
     `📍 \`${place.lat}, ${place.lon}\``,
     '',

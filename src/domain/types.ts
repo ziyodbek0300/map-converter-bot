@@ -23,7 +23,8 @@ export interface ProviderDef {
 }
 
 export interface Conversion {
-  source: Provider;
+  /** Source app the link came from, or null for a shared Telegram location. */
+  source: Provider | null;
   place: Place;
   /** Generated links for every provider except the source. */
   targets: Array<{ provider: Provider; url: string }>;

@@ -4,9 +4,9 @@ export const MESSAGES = {
   help: [
     '🗺️ Map Link Converter',
     '',
-    'Send a Google, Yandex, Apple Maps or 2GIS link — I’ll convert it to the others.',
+    'Send a Google, Yandex, Apple Maps or 2GIS link — or share a 📍 location — and I’ll convert it to all of them.',
     '',
-    '🇺🇿 Google, Yandex, Apple Maps yoki 2GIS havolasini yuboring — qolganlariga aylantiraman.',
+    '🇺🇿 Google, Yandex, Apple Maps yoki 2GIS havolasini yuboring — yoki 📍 joylashuv ulashing — barchasiga aylantiraman.',
   ].join('\n'),
   notFound:
     'No map link found. Send a Google, Yandex, Apple Maps or 2GIS link.\n' +

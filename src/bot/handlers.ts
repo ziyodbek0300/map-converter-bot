@@ -1,8 +1,8 @@
 // Telegram update handlers. Registers all bot behavior on a Telegraf instance.
 
-import type { Telegraf } from 'telegraf';
+import type { Context, Telegraf } from 'telegraf';
 import { message } from 'telegraf/filters';
-import { convert, type Conversion } from '../domain';
+import { convert, convertCoords, type Conversion } from '../domain';
 import { MESSAGES } from './messages';
 import {
   renderCaption,
@@ -13,6 +13,23 @@ import {
 export function registerHandlers(bot: Telegraf): void {
   bot.start((ctx) => ctx.reply(MESSAGES.help));
   bot.help((ctx) => ctx.reply(MESSAGES.help));
+
+  // Shared venue (a pinned place with a name) — carries coords + a title we
+  // keep as the label. Registered before the location handler because a venue
+  // update also includes a `location` field and would otherwise match it.
+  bot.on(message('venue'), async (ctx) => {
+    const { location, title } = ctx.message.venue;
+    const result = convertCoords(location.latitude, location.longitude, title);
+    await replyConversion(ctx, result);
+  });
+
+  // Shared live/static location — build links straight from the coordinates,
+  // no link parsing needed.
+  bot.on(message('location'), async (ctx) => {
+    const { latitude, longitude } = ctx.message.location;
+    const result = convertCoords(latitude, longitude);
+    await replyConversion(ctx, result);
+  });
 
   // Direct message: convert and reply with caption + buttons (incl. share).
   bot.on(message('text'), async (ctx) => {
@@ -28,10 +45,7 @@ export function registerHandlers(bot: Telegraf): void {
       return ctx.reply(MESSAGES.notFound);
     }
 
-    await ctx.replyWithMarkdownV2(renderCaption(result), {
-      link_preview_options: { is_disabled: true },
-      ...buildKeyboard(result),
-    });
+    await replyConversion(ctx, result);
   });
 
   // Inline mode: powers the Share button. The query is a map URL (pre-filled by
@@ -73,7 +87,15 @@ export function registerHandlers(bot: Telegraf): void {
   });
 }
 
+/** Replies with the conversion caption + app buttons (incl. share). */
+function replyConversion(ctx: Context, result: Conversion) {
+  return ctx.replyWithMarkdownV2(renderCaption(result), {
+    link_preview_options: { is_disabled: true },
+    ...buildKeyboard(result),
+  });
+}
+
 /** Stable, unique-per-place id for an inline result (≤64 bytes). */
 function inlineResultId({ source, place }: Conversion): string {
-  return `${source}:${place.lat},${place.lon}`.slice(0, 64);
+  return `${source ?? 'loc'}:${place.lat},${place.lon}`.slice(0, 64);
 }

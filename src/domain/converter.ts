@@ -53,21 +53,59 @@ export function isShortLink(url: URL): boolean {
   return SHORT_LINK_PATTERNS.some((test) => test(url));
 }
 
+// Browser-like UA. Yandex's edge will serve a bot-challenge HTML page (200 OK,
+// no redirect) to obvious bot UAs, which leaves the short link unresolved and
+// makes coordinate parsing fail. A realistic UA gets the normal 301.
+const BROWSER_UA =
+  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
+
+// A short link that comes back without redirecting means Yandex's edge served a
+// bot-challenge page instead of the 301 — a transient, IP/rate-based block that
+// usually clears on a retry (which is why re-sending the same link works). Retry
+// a few times before giving up rather than surfacing a spurious "no link found".
+const EXPAND_MAX_ATTEMPTS = 3;
+const EXPAND_RETRY_DELAY_MS = 400;
+
+const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function fetchExpanded(input: string): Promise<string> {
+  const res = await fetch(input, {
+    method: 'GET',
+    redirect: 'follow',
+    headers: {
+      'User-Agent': BROWSER_UA,
+      Accept:
+        'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+      'Accept-Language': 'en-US,en;q=0.9',
+    },
+  });
+  return res.url || input;
+}
+
 /**
- * Follows redirects on a short link to get the canonical long URL.
- * Returns the resolved URL string, or the original on failure.
+ * Follows redirects on a short link to get the canonical long URL, retrying when
+ * the host serves a non-redirecting bot-challenge. Returns the resolved URL
+ * string, or the original on failure.
  */
 export async function expandShortLink(input: string): Promise<string> {
-  try {
-    const res = await fetch(input, {
-      method: 'GET',
-      redirect: 'follow',
-      headers: { 'User-Agent': 'Mozilla/5.0 (map-converter-bot)' },
-    });
-    return res.url || input;
-  } catch {
-    return input;
+  for (let attempt = 1; attempt <= EXPAND_MAX_ATTEMPTS; attempt++) {
+    try {
+      const final = await fetchExpanded(input);
+      if (final !== input) return final;
+      console.warn(
+        `short-link expansion did not redirect (attempt ${attempt}/${EXPAND_MAX_ATTEMPTS}):`,
+        input
+      );
+    } catch (err) {
+      console.warn(
+        `short-link expansion failed (attempt ${attempt}/${EXPAND_MAX_ATTEMPTS}):`,
+        input,
+        err
+      );
+    }
+    if (attempt < EXPAND_MAX_ATTEMPTS) await delay(EXPAND_RETRY_DELAY_MS);
   }
+  return input;
 }
 
 // --- Top-level conversion ----------------------------------------------------
@@ -101,6 +139,17 @@ export async function convert(text: string): Promise<Conversion | null> {
   }));
 
   return { source, place, targets };
+}
+
+/**
+ * Builds a conversion from raw coordinates (e.g. a Telegram location/venue the
+ * user shared rather than a link). With no source app, every provider is a
+ * target.
+ */
+export function convertCoords(lat: number, lon: number, label?: string): Conversion {
+  const place: Place = label ? { lat, lon, label } : { lat, lon };
+  const targets = ALL_PROVIDERS.map((p) => ({ provider: p, url: buildUrl(p, place) }));
+  return { source: null, place, targets };
 }
 
 function tryParseUrl(input: string): URL | null {
