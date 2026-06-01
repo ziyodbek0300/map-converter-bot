@@ -8,7 +8,7 @@
     "start": "node --env-file-if-exists=.env dist/index.js",
     "dev": "tsc && node --env-file-if-exists=.env dist/index.js",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test \"src/**/*.test.ts\""
+    "test": "node --import tsx --test \"src/**/*.test.ts\""
   },
   "dependencies": {
     "telegraf": "^4.16.3"
