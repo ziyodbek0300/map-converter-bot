@@ -18,7 +18,8 @@ type Fields = Record<string, unknown>;
 
 function emit(level: Level, event: string, fields?: Fields): void {
   if (ORDER[level] < threshold) return;
-  const line = JSON.stringify({ level, event, ...fields });
+  // ISO timestamp first so every line is self-dated when read via `pm2 logs`.
+  const line = JSON.stringify({ time: new Date().toISOString(), level, event, ...fields });
   if (level === 'error') console.error(line);
   else if (level === 'warn') console.warn(line);
   else console.log(line);
