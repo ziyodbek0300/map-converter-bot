@@ -51,7 +51,13 @@ export function registerHandlers(bot: Telegraf, opts: HandlerOptions = { adminId
   // Admin-only usage snapshot. Registered before the text handler so the
   // command is intercepted; non-admins get no reply (and no info leak).
   bot.command('stats', async (ctx) => {
-    if (!adminIds.has(ctx.from.id)) return;
+    if (!adminIds.has(ctx.from.id)) {
+      // Logged (not replied) so non-admins get no info leak, but operators can
+      // still see who was denied and compare the id against ADMIN_IDS.
+      log.warn('stats.denied', { ...logContext(ctx), adminCount: adminIds.size });
+      return;
+    }
+    log.info('stats.ok', logContext(ctx));
     await ctx.reply(formatStats(), { parse_mode: 'HTML' });
   });
 
