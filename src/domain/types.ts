@@ -30,6 +30,22 @@ export interface Conversion {
   targets: Array<{ provider: Provider; url: string }>;
 }
 
+/**
+ * Why a piece of text could not be converted. Kept distinct so the bot can
+ * tailor its reply — notably `no-coords` (a recognized map link that simply
+ * carries no coordinates, e.g. a Google "share place" link that resolves to
+ * `?q=<name>&ftid=…`) deserves a different hint than an unrecognized link.
+ */
+export type ConvertFailure =
+  | 'no-url' // no http(s) link in the text at all
+  | 'unsupported' // a link, but not from a provider we recognize
+  | 'no-coords'; // a recognized provider link with no extractable coordinates
+
+/** Outcome of {@link convert}: either a conversion or a typed failure reason. */
+export type ConvertResult =
+  | { ok: true; value: Conversion }
+  | { ok: false; reason: ConvertFailure };
+
 // `Provider` is the set of registered provider keys; defined alongside the
 // registry in ./providers and re-exported here for a single type surface.
 export type { Provider };

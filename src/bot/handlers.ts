@@ -2,7 +2,7 @@
 
 import type { Context, Telegraf } from 'telegraf';
 import { message } from 'telegraf/filters';
-import { convert, convertCoords, type Conversion } from '../domain';
+import { convert, convertCoords, type Conversion, type ConvertResult } from '../domain';
 import { metrics } from '../metrics';
 import { log } from '../log';
 import { MESSAGES } from './messages';
@@ -44,6 +44,20 @@ function placeFields({ source, place }: Conversion): Record<string, unknown> {
 
 export function registerHandlers(bot: Telegraf, opts: HandlerOptions = { adminIds: [] }): void {
   const adminIds = new Set(opts.adminIds);
+
+  // Telegraf's default error handler logs the raw update and *rethrows*, which
+  // escapes the polling loop's Promise.all and becomes an unhandledRejection
+  // (and sets process.exitCode = 1). The most common trigger is the 90s
+  // `handlerTimeout` firing on a slow short-link expansion. Swallow it here:
+  // log through our structured logger, count it, and let the bot keep running.
+  bot.catch((err, ctx) => {
+    metrics.inc('errors');
+    log.error('bot.unhandled', {
+      ...logContext(ctx),
+      updateType: ctx.updateType,
+      error: String(err),
+    });
+  });
 
   bot.start((ctx) => ctx.reply(MESSAGES.help));
   bot.help((ctx) => ctx.reply(MESSAGES.help));
@@ -90,7 +104,7 @@ export function registerHandlers(bot: Telegraf, opts: HandlerOptions = { adminId
     const text = ctx.message.text;
     const input = snippet(text);
     const start = Date.now();
-    let result: Conversion | null;
+    let result: ConvertResult;
     try {
       result = await convert(text);
     } catch (err) {
@@ -101,18 +115,19 @@ export function registerHandlers(bot: Telegraf, opts: HandlerOptions = { adminId
 
     const ms = Date.now() - start;
 
-    if (!result) {
+    if (!result.ok) {
       metrics.inc('notFound');
-      // Distinguish "they didn't send a link at all" from "link found but
-      // unparseable" — the two need different product responses.
-      const reason = /https?:\/\//i.test(text) ? 'unsupported-or-no-coords' : 'no-url';
-      log.info('convert.notfound', { ...logContext(ctx), input, reason, ms });
-      return ctx.reply(MESSAGES.notFound);
+      log.info('convert.notfound', { ...logContext(ctx), input, reason: result.reason, ms });
+      // A recognized link that simply lacks coordinates gets a tailored hint
+      // (share the pin) rather than the generic "no link found".
+      const reply = result.reason === 'no-coords' ? MESSAGES.noCoords : MESSAGES.notFound;
+      return ctx.reply(reply);
     }
 
-    metrics.recordConversion(result.source);
-    log.info('convert.ok', { ...logContext(ctx), input, ...placeFields(result), ms });
-    await replyConversion(ctx, result);
+    const conversion = result.value;
+    metrics.recordConversion(conversion.source);
+    log.info('convert.ok', { ...logContext(ctx), input, ...placeFields(conversion), ms });
+    await replyConversion(ctx, conversion);
   });
 
   // Inline mode: powers the Share button. The query is a map URL (pre-filled by
@@ -121,7 +136,7 @@ export function registerHandlers(bot: Telegraf, opts: HandlerOptions = { adminId
   bot.on('inline_query', async (ctx) => {
     metrics.inc('inlineQueries');
     const input = snippet(ctx.inlineQuery.query);
-    let result: Conversion | null = null;
+    let result: ConvertResult | null = null;
     try {
       result = await convert(ctx.inlineQuery.query);
     } catch (err) {
@@ -129,30 +144,32 @@ export function registerHandlers(bot: Telegraf, opts: HandlerOptions = { adminId
       log.error('convert.fail', { ...logContext(ctx), mode: 'inline', input, error: String(err) });
     }
 
-    if (!result) {
-      log.info('convert.notfound', { ...logContext(ctx), mode: 'inline', input });
+    if (!result?.ok) {
+      const reason = result ? result.reason : 'error';
+      log.info('convert.notfound', { ...logContext(ctx), mode: 'inline', input, reason });
       return ctx.answerInlineQuery([], {
         cache_time: 0,
         button: { text: MESSAGES.inlineNoResult, start_parameter: 'start' },
       });
     }
 
-    log.info('convert.ok', { ...logContext(ctx), mode: 'inline', input, ...placeFields(result) });
+    const conversion = result.value;
+    log.info('convert.ok', { ...logContext(ctx), mode: 'inline', input, ...placeFields(conversion) });
 
-    const { place } = result;
+    const { place } = conversion;
     await ctx.answerInlineQuery(
       [
         {
           type: 'article',
-          id: inlineResultId(result),
+          id: inlineResultId(conversion),
           title: place.label ?? `${place.lat}, ${place.lon}`,
           description: MESSAGES.inlineDescription,
           input_message_content: {
-            message_text: renderCaption(result),
+            message_text: renderCaption(conversion),
             parse_mode: 'MarkdownV2',
             link_preview_options: { is_disabled: true },
           },
-          ...buildAppKeyboard(result.targets),
+          ...buildAppKeyboard(conversion.targets),
         },
       ],
       { cache_time: 0 }

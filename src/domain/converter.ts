@@ -2,7 +2,7 @@
 // Pure domain logic — no Telegram or I/O beyond the short-link HTTP redirect.
 
 import { PROVIDERS } from './providers';
-import type { Conversion, Place, Provider } from './types';
+import type { Conversion, ConvertResult, Place, Provider } from './types';
 import { TtlCache } from './cache';
 import { log } from '../log';
 import { metrics } from '../metrics';
@@ -70,6 +70,14 @@ const BROWSER_UA =
 const EXPAND_MAX_ATTEMPTS = intEnv('EXPAND_MAX_ATTEMPTS', 3);
 const EXPAND_RETRY_DELAY_MS = intEnv('EXPAND_RETRY_DELAY_MS', 400);
 
+// Node's fetch has no default timeout, so a stalled upstream (goo.gl/Yandex edge
+// hanging the connection) would block the handler indefinitely. With no cap, the
+// only thing that eventually fires is Telegraf's 90s `handlerTimeout`, which
+// rejects the middleware promise *outside* our try/catch and surfaces as an
+// unhandled rejection. Bounding each request keeps failures inside our retry
+// loop: worst case is MAX_ATTEMPTS * (timeout + retry delay), well under 90s.
+const EXPAND_TIMEOUT_MS = intEnv('EXPAND_TIMEOUT_MS', 10_000);
+
 // Successful expansions are stable (a short code maps to one long URL), so a
 // generous TTL is safe and saves repeated network round-trips for forwarded links.
 const CACHE_TTL_MS = intEnv('EXPAND_CACHE_TTL_MS', 24 * 60 * 60 * 1000); // 24h
@@ -93,6 +101,7 @@ async function fetchExpanded(input: string): Promise<string> {
   const res = await fetch(input, {
     method: 'GET',
     redirect: 'follow',
+    signal: AbortSignal.timeout(EXPAND_TIMEOUT_MS),
     headers: {
       'User-Agent': BROWSER_UA,
       Accept:
@@ -100,7 +109,48 @@ async function fetchExpanded(input: string): Promise<string> {
       'Accept-Language': 'en-US,en;q=0.9',
     },
   });
-  return res.url || input;
+  const final = res.url || input;
+
+  // No redirect happened (bot-challenge page) — let the caller retry. Don't read
+  // the body: a challenge page carries no coordinates anyway.
+  if (final === input) return final;
+
+  // The usual case: the short link redirected straight to a coordinate-bearing
+  // URL (e.g. goo.gl → /place/...@lat,lon). Nothing more to do.
+  if (urlHasCoords(final)) return final;
+
+  // The redirect landed on a place page whose URL hides its coordinates — e.g.
+  // Yandex `/maps/org/<id>` reached via `yandex.<tld>/maps/-/<code>`, which only
+  // exposes `ll` inside the HTML. Recover them from the body.
+  try {
+    const recovered = coordUrlFromBody(await res.text());
+    if (recovered) return recovered;
+  } catch {
+    // Body read aborted/failed — fall back to the URL as resolved.
+  }
+  return final;
+}
+
+/** True if the resolved URL already exposes coordinates to a provider parser. */
+function urlHasCoords(urlStr: string): boolean {
+  const u = tryParseUrl(urlStr);
+  if (!u) return false;
+  const provider = detectProvider(u.hostname);
+  return provider ? PROVIDERS[provider].parse(u) !== null : false;
+}
+
+/**
+ * Recovers a coordinate-bearing URL from a place page's HTML when the page URL
+ * itself carries none. Yandex org pages embed their own canonical share link
+ * with a double-encoded comma: `...ll%3D<lon>%252C<lat>...` → `ll=<lon>,<lat>`.
+ * That `ll` is the unambiguous share point Yandex itself generates (there is
+ * exactly one per page), so it's preferred over scraping the page's many raw
+ * `"coordinates":[lon,lat]` arrays.
+ */
+export function coordUrlFromBody(body: string): string | null {
+  const ll = body.match(/ll%3D(-?\d+\.\d+)%252C(-?\d+\.\d+)/);
+  if (ll) return `https://yandex.com/maps/?ll=${ll[1]},${ll[2]}`;
+  return null;
 }
 
 /**
@@ -150,12 +200,12 @@ export async function expandShortLink(input: string): Promise<string> {
  * Extracts the first map URL from arbitrary text, expands it if it's a short
  * link, parses coordinates, and builds links for every other provider.
  */
-export async function convert(text: string): Promise<Conversion | null> {
+export async function convert(text: string): Promise<ConvertResult> {
   const rawUrl = extractFirstUrl(text);
-  if (!rawUrl) return null;
+  if (!rawUrl) return { ok: false, reason: 'no-url' };
 
   let url = tryParseUrl(rawUrl);
-  if (!url) return null;
+  if (!url) return { ok: false, reason: 'no-url' };
 
   // Short links don't carry coords — expand them first.
   if (isShortLink(url)) {
@@ -164,17 +214,17 @@ export async function convert(text: string): Promise<Conversion | null> {
   }
 
   const source = detectProvider(url.hostname);
-  if (!source) return null;
+  if (!source) return { ok: false, reason: 'unsupported' };
 
   const place = PROVIDERS[source].parse(url);
-  if (!place) return null;
+  if (!place) return { ok: false, reason: 'no-coords' };
 
   const targets = ALL_PROVIDERS.filter((p) => p !== source).map((p) => ({
     provider: p,
     url: buildUrl(p, place),
   }));
 
-  return { source, place, targets };
+  return { ok: true, value: { source, place, targets } };
 }
 
 /**

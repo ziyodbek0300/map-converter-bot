@@ -8,6 +8,7 @@ import {
   isShortLink,
   convertCoords,
   convert,
+  coordUrlFromBody,
 } from './converter';
 
 // --- extractFirstUrl ---------------------------------------------------------
@@ -45,6 +46,23 @@ test('isShortLink: ignores full provider URLs', () => {
   assert.ok(!isShortLink(new URL('https://maps.apple.com/?ll=1,2')));
 });
 
+// --- coordUrlFromBody --------------------------------------------------------
+
+test('coordUrlFromBody: recovers ll from a Yandex org page body', () => {
+  // Yandex embeds its canonical share link with a double-encoded comma (%252C).
+  const body =
+    '<a href="https://yandex.uz/maps/org/x/39349291460/%3Fll%3D69.230909%252C41.321215%26z%3D16">share</a>';
+  // Returns lon,lat in the order the Yandex provider expects (?ll=lon,lat).
+  assert.equal(
+    coordUrlFromBody(body),
+    'https://yandex.com/maps/?ll=69.230909,41.321215'
+  );
+});
+
+test('coordUrlFromBody: returns null when no embedded ll is present', () => {
+  assert.equal(coordUrlFromBody('<html>no coordinates here</html>'), null);
+});
+
 // --- convertCoords -----------------------------------------------------------
 
 test('convertCoords: builds a target for every provider with no source', () => {
@@ -67,22 +85,28 @@ test('convert: parses a full Google link and targets the other three', async () 
   const result = await convert(
     'https://www.google.com/maps/search/?api=1&query=41.31,69.28'
   );
-  assert.ok(result);
-  assert.equal(result.source, 'google');
-  assert.deepEqual([result.place.lat, result.place.lon], [41.31, 69.28]);
+  assert.ok(result.ok);
+  assert.equal(result.value.source, 'google');
+  assert.deepEqual([result.value.place.lat, result.value.place.lon], [41.31, 69.28]);
   // Source excluded; the other three providers are targets.
-  const providers = result.targets.map((t) => t.provider).sort();
+  const providers = result.value.targets.map((t) => t.provider).sort();
   assert.deepEqual(providers, ['2gis', 'apple', 'yandex']);
 });
 
-test('convert: returns null when no URL is present', async () => {
-  assert.equal(await convert('no link here'), null);
+test('convert: reports no-url when no URL is present', async () => {
+  assert.deepEqual(await convert('no link here'), { ok: false, reason: 'no-url' });
 });
 
-test('convert: returns null for an unrecognized host', async () => {
-  assert.equal(await convert('https://example.com/foo'), null);
+test('convert: reports unsupported for an unrecognized host', async () => {
+  assert.deepEqual(await convert('https://example.com/foo'), {
+    ok: false,
+    reason: 'unsupported',
+  });
 });
 
-test('convert: returns null when the link carries no coordinates', async () => {
-  assert.equal(await convert('https://maps.apple.com/'), null);
+test('convert: reports no-coords when the link carries no coordinates', async () => {
+  assert.deepEqual(await convert('https://maps.apple.com/'), {
+    ok: false,
+    reason: 'no-coords',
+  });
 });
