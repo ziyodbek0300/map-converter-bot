@@ -97,8 +97,19 @@ const yandex: ProviderDef = {
 const apple: ProviderDef = {
   name: 'Apple Maps',
   icon: '🍎',
-  hostPatterns: [/(^|\.)maps\.apple\.com$/i, /(^|\.)apple\.com$/i],
+  // `maps.apple` (no .com) is the newer place-card short host, e.g.
+  // https://maps.apple/p/<code>, which redirects to a maps.apple.com URL.
+  hostPatterns: [
+    /(^|\.)maps\.apple\.com$/i,
+    /(^|\.)maps\.apple$/i,
+    /(^|\.)apple\.com$/i,
+  ],
   parse(url) {
+    // Place name, if Apple included one (?name=Osh on /place URLs). Used purely
+    // as a label — never as a coordinate source.
+    const rawName = url.searchParams.get('name')?.trim();
+    const label = rawName && !LATLON_RE.test(rawName) ? rawName : undefined;
+
     // Apple uses lat,lon ordering.
     return firstCoord(
       [
@@ -108,7 +119,8 @@ const apple: ProviderDef = {
         url.searchParams.get('center'),
         url.searchParams.get('q'),
       ],
-      'latlon'
+      'latlon',
+      label
     );
   },
   build(place) {

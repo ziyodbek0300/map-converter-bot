@@ -50,6 +50,7 @@ const SHORT_LINK_PATTERNS: Array<(url: URL) => boolean> = [
   (u) => /clck\.ru$/i.test(u.hostname),
   (u) => /^\/maps\/-\//i.test(u.pathname), // Yandex: yandex.<tld>/maps/-/<code>
   (u) => /(^|\.)go\.2gis\.com$/i.test(u.hostname), // 2GIS: go.2gis.com/<code>
+  (u) => /(^|\.)maps\.apple$/i.test(u.hostname), // Apple: maps.apple/p/<code>
 ];
 
 export function isShortLink(url: URL): boolean {

@@ -39,6 +39,7 @@ test('isShortLink: recognizes known shorteners', () => {
   assert.ok(isShortLink(new URL('https://clck.ru/abcdef')));
   assert.ok(isShortLink(new URL('https://yandex.ru/maps/-/CODE123')));
   assert.ok(isShortLink(new URL('https://go.2gis.com/abc123')));
+  assert.ok(isShortLink(new URL('https://maps.apple/p/UAGYcK~pGf8sT6')));
 });
 
 test('isShortLink: ignores full provider URLs', () => {

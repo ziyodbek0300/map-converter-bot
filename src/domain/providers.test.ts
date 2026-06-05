@@ -17,6 +17,7 @@ test('detectProvider: recognizes each provider by hostname', () => {
   assert.equal(detectProvider('yandex.com'), 'yandex');
   assert.equal(detectProvider('maps.yandex.ru'), 'yandex');
   assert.equal(detectProvider('maps.apple.com'), 'apple');
+  assert.equal(detectProvider('maps.apple'), 'apple');
   assert.equal(detectProvider('2gis.ru'), '2gis');
 });
 
@@ -58,6 +59,18 @@ test('yandex.parse: reads lon,lat from whatshere[point]', () => {
 test('apple.parse: reads lat,lon from ll', () => {
   const url = new URL('https://maps.apple.com/?ll=41.31,69.28');
   assert.deepEqual(apple.parse(url), { lat: 41.31, lon: 69.28, label: undefined });
+});
+
+test('apple.parse: reads coordinate and name from a place card URL', () => {
+  // What maps.apple/p/<code> redirects to.
+  const url = new URL(
+    'https://maps.apple.com/place?coordinate=40.048308,72.596497&name=Osh&map=explore'
+  );
+  assert.deepEqual(apple.parse(url), {
+    lat: 40.048308,
+    lon: 72.596497,
+    label: 'Osh',
+  });
 });
 
 test('2gis.parse: reads lon,lat from the m param', () => {
